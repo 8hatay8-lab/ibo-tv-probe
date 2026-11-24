@@ -1,0 +1,12 @@
+name: probe
+on: [push, workflow_dispatch]
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          curl -s -m 20 -o out.txt -w "player_api %{http_code} %{remote_ip} %{time_total}\n" "http://fx.mertnet.in/player_api.php" || echo fail
+          head -c 300 out.txt; echo
+          curl -s -m 10 ifconfig.me; echo
+          which ffmpeg && ffmpeg -version | head -1
