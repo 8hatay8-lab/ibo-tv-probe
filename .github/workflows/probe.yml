@@ -3,10 +3,26 @@ on: [push, workflow_dispatch]
 jobs:
   p:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
+    env: {U: "${{ secrets.IPTV_U }}", P: "${{ secrets.IPTV_P }}"}
     steps:
-      - env: {U: "${{ secrets.IPTV_U }}", P: "${{ secrets.IPTV_P }}"}
+      - name: tools
         run: |
-          curl -s -m 20 -A "IBO-TV/1.0" -o o.json -w "code %{http_code}\n" "http://fx.mertnet.in/player_api.php?username=$U&password=$P" || true
-          python3 -c "import json;d=json.load(open('o.json'))['user_info'];print({k:d.get(k) for k in ['auth','status','max_connections','active_cons','exp_date']})" || head -c 200 o.json
-          curl -s -m 20 -A node -o o2.json -w "nodeUA %{http_code}\n" "http://fx.mertnet.in/player_api.php?username=$U&password=$P" || true
+          nproc
+          (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null) &
+          curl -sL -o cf.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && sudo dpkg -i cf.deb >/dev/null
+          wait; ffmpeg -version | head -1
+      - name: stream
+        run: |
+          SRC="http://fx.mertnet.in/live/$U/$P/1481.ts"
+          curl -s -m 12 -A "IBO-TV/1.0" -o probe.ts -w "src %{http_code} %{size_download}B\n" "$SRC" || true
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate -of csv=p=0 probe.ts || true
+          sleep 3
+          mkdir hls
+          (curl -s -N -A "IBO-TV/1.0" "$SRC" | ffmpeg -hide_banner -nostdin -loglevel error -stats -fflags +genpts+discardcorrupt -i pipe:0 -map 0:v:0? -map 0:a:0? -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -vf "scale=w='min(iw,1920)':h='min(ih,1080)':force_original_aspect_ratio=decrease" -b:v 3800k -maxrate 4400k -bufsize 6500k -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -b:a 128k -ac 2 -f hls -hls_time 3 -hls_list_size 7 -hls_flags delete_segments+independent_segments+omit_endlist hls/index.m3u8 2> ff.log) &
+          (cd hls && python3 -m http.server 8080 >/dev/null 2>&1) &
+          cloudflared tunnel --no-autoupdate --url http://localhost:8080 > cf.log 2>&1 &
+          sleep 25
+          echo "TUNNEL $(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' cf.log | head -1)"
+          for i in 1 2 3 4 5 6 7 8; do sleep 15; echo "t$i segs=$(ls hls | wc -l) $(tail -c 120 ff.log | tr '\r' '\n' | tail -1)"; done
+          pkill ffmpeg; pkill curl; echo done
